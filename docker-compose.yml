@@ -1,0 +1,107 @@
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.83
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+      - RUSTFS_CONSOLE_ENABLE=true
+    volumes:
+      - rustfs-data:/data
+    command: /data
+
+  rustfs-init:
+    image: rustfs/rc:v0.1.36
+    depends_on:
+      - rustfs
+    entrypoint: >
+      /bin/sh -c "
+      until rc alias set rustfs http://rustfs:9000 rustfsadmin rustfsadmin; do
+        echo 'Waiting for RustFS...';
+        sleep 1;
+      done;
+      rc mb --ignore-existing rustfs/fluss;
+      "
+
+  coordinator-server:
+    image: apache/fluss:1.0.0
+    command: coordinatorServer
+    depends_on:
+      - zookeeper
+      - rustfs-init
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://coordinator-server:9123
+        remote.data.dir: s3://fluss/remote-data
+        s3.endpoint: http://rustfs:9000
+        s3.access-key: rustfsadmin
+        s3.secret-key: rustfsadmin
+        s3.region: us-east-1
+        s3.path-style-access: true
+        s3.assumed.role.arn: arn:aws:iam::000000000000:role/rustfsadmin
+        s3.assumed.role.sts.endpoint: http://rustfs:9000
+
+  tablet-server:
+    image: apache/fluss:1.0.0
+    command: tabletServer
+    depends_on:
+      - coordinator-server
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://tablet-server:9123
+        data.dir: /tmp/fluss/data
+        remote.data.dir: s3://fluss/remote-data
+        s3.endpoint: http://rustfs:9000
+        s3.access-key: rustfsadmin
+        s3.secret-key: rustfsadmin
+        s3.region: us-east-1
+        s3.path-style-access: true
+        s3.assumed.role.arn: arn:aws:iam::000000000000:role/rustfsadmin
+        s3.assumed.role.sts.endpoint: http://rustfs:9000
+
+  zookeeper:
+    image: zookeeper:3.9.2
+    restart: always
+
+  jobmanager:
+    image: apache/fluss-quickstart-flink:1.20-1.0.0
+    ports:
+      - "8083:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+
+  taskmanager:
+    image: apache/fluss-quickstart-flink:1.20-1.0.0
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.framework.off-heap.size: 256m
+
+  sql-client:
+    image: apache/fluss-quickstart-flink:1.20-1.0.0
+    depends_on:
+      - jobmanager
+    command: /opt/sql-client/sql-client
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+
+volumes:
+  rustfs-data:
